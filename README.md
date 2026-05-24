@@ -43,6 +43,20 @@ The main numbers are luma losses:
 RGB previews combine predicted luma with existing chroma channels. They are
 relevant for visualization only.
 
+## Results
+
+Native-resolution comparison images are generated from Urban100 HR samples only.
+Each source image is downscaled by 2x using nearest, bilinear, bicubic,
+Lanczos, and the neural luma model. This avoids comparing against pre-existing
+LR files or resizing all samples to a fixed square size.
+
+Generated examples are written to `comparison_outputs/` as side-by-side
+comparison images.
+
+![Urban100 comparison sample 0](comparison_outputs/sample_000_comparison.png)
+
+![Urban100 comparison sample 1](comparison_outputs/sample_001_comparison.png)
+
 ## Setup
 
 Install the core dependencies in a Python environment:
