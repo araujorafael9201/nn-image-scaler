@@ -1,0 +1,13 @@
+.venv/
+.gitrepo/
+__pycache__/
+.ipynb_checkpoints/
+
+.agents/
+.codex/
+
+*.pyc
+*.pyo
+*.pyd
+
+.DS_Store
