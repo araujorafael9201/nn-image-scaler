@@ -1,72 +1,71 @@
 # NN Downscaler
 
-Neural image downscaling experiments.
+Neural image downscaling experiments for learning compact, reconstructable image
+representations.
 
-This project studies learned image downscaling as an information bottleneck. A
-model receives a high-resolution image, predicts a lower-resolution
-representation, and is trained to preserve information useful for
-high-resolution reconstruction.
-
-The current experiment is luma-only. The network predicts the Y channel of a YUV
-representation; chroma channels are excluded from the learned model and used
-only for RGB visualization.
+The model receives a high-resolution RGB image, predicts a 2x lower-resolution
+RGB image, and trains a decoder to reconstruct the original image from that
+predicted bottleneck. The interesting question is not just whether the learned
+downscale looks like bicubic or Lanczos, but whether it can keep details that are
+useful when the image needs to be brought back up again.
 
 ## Contents
 
-- `nn_downscaler.ipynb`: the main neural-network experiment.
-- `downsampling_methods_exploration.ipynb`: earlier exploration of classical
-  downsampling methods such as nearest, bilinear, bicubic, and Lanczos.
+- `train.py`: trains the RGB downscaler on DIV2K crops and writes checkpoints.
+- `compare.py`: generates side-by-side visual comparisons for classical and
+  neural downsampling methods.
+- `nn_downscaler.ipynb`: earlier notebook exploration.
+- `downsampling_methods_exploration.ipynb`: baseline resampling experiments.
 
 ## Experiment
 
-The model is trained with two objectives:
+The current model has three pieces:
 
-- predict low-resolution luma matching the LR target;
-- reconstruct high-resolution luma from the predicted LR luma.
+- an encoder that compresses the HR RGB input by 2x;
+- an LR head that emits the learned RGB downsample;
+- a decoder that reconstructs HR RGB using only the learned LR output.
 
-The decoder receives only the predicted low-resolution luma. It does not receive
-hidden encoder features. This ensures that reconstruction depends on the same
-bottleneck used as the downscaled output.
+Training uses DIV2K HR images. Each batch samples `512x512` HR crops and creates
+`256x256` LR targets with bicubic resizing. The loss combines:
 
-The experiment evaluates whether a learned downscaler can preserve useful
-structure differently from standard resampling methods such as bicubic or
-Lanczos.
+- LR loss: how closely the learned downsample matches the bicubic target;
+- HR loss: how well the decoder reconstructs the original RGB crop.
 
-## Evaluation
+This keeps the bottleneck honest: the decoder does not receive hidden encoder
+features, so reconstruction quality depends on the actual downscaled image.
 
-The main numbers are luma losses:
-
-- LR luma loss: how closely the learned downscale matches the LR target;
-- HR luma loss: how well the decoder reconstructs the original luma;
-- baseline HR loss: how well a simple upsampled LR image reconstructs luma.
-
-RGB previews combine predicted luma with existing chroma channels. They are
-relevant for visualization only.
-
-## Results
-
-Native-resolution comparison images are generated from Urban100 HR samples only.
-Each source image is downscaled by 2x using nearest, bilinear, bicubic,
-Lanczos, and the neural luma model. This avoids comparing against pre-existing
-LR files or resizing all samples to a fixed square size.
-
-Generated examples are written to `comparison_outputs/` as side-by-side
-comparison images.
-
-![Urban100 comparison sample 0](comparison_outputs/sample_000_comparison.png)
-
-![Urban100 comparison sample 1](comparison_outputs/sample_001_comparison.png)
-
-## Setup
+## Usage
 
 Install the core dependencies in a Python environment:
 
 ```bash
-pip install torch torchvision datasets matplotlib numpy pillow notebook
+pip install torch torchvision datasets matplotlib numpy pillow notebook tqdm
 ```
 
-Then open the notebooks with Jupyter:
+Train the model:
 
 ```bash
-jupyter notebook
+python train.py
 ```
+
+Generate comparison images from local DIV2K validation images:
+
+```bash
+python compare.py --model checkpoints/checkpoint-9.pth
+```
+
+By default, `compare.py` uses full-resolution DIV2K validation images from
+`data/div2k/DIV2K_valid_HR`, writes outputs to `comparison_outputs/`, and labels
+each downsampling method with its runtime. Use `--crop-size 1024` for quicker
+preview grids, or leave the default `--crop-size 0` for the largest available
+source images.
+
+## Results
+
+Comparison grids show the HR source next to nearest, bilinear, bicubic, Lanczos,
+and neural RGB downscales. They are meant for close visual inspection of edge
+behavior, texture retention, color stability, and runtime.
+
+![Street scene comparison](comparison_outputs/sample_004_comparison.png)
+
+![Architecture comparison](comparison_outputs/sample_008_comparison.png)
