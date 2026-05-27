@@ -14,5 +14,4 @@ __pycache__/
 model.pth
 checkpoints.csv
 checkpoints/
-comparison_outputs/sample_*.png
 data/

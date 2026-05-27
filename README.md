@@ -39,7 +39,7 @@ features, so reconstruction quality depends on the actual downscaled image.
 Install the core dependencies in a Python environment:
 
 ```bash
-pip install torch torchvision datasets matplotlib numpy pillow notebook tqdm
+pip install torch torchvision matplotlib numpy pillow notebook tqdm
 ```
 
 Train the model:
@@ -48,24 +48,34 @@ Train the model:
 python train.py
 ```
 
-Generate comparison images from local DIV2K validation images:
+Generate comparison images from local test inputs:
 
 ```bash
-python compare.py --model checkpoints/checkpoint-9.pth
+python compare.py --model path/to/model.pth
 ```
 
-By default, `compare.py` uses full-resolution DIV2K validation images from
-`data/div2k/DIV2K_valid_HR`, writes outputs to `comparison_outputs/`, and labels
-each downsampling method with its runtime. Use `--crop-size 1024` for quicker
-preview grids, or leave the default `--crop-size 0` for the largest available
-source images.
+Use `--model` to point at the checkpoint or `model.pth` file produced by your
+own training run. By default, `compare.py` reads images from `test_inputs/`,
+writes outputs to `comparison_outputs/`, and labels each downsampling or
+upscaling method with its runtime. The default inputs are curated stress images
+with small text, grids, diagonal lines, fine texture, hard color edges, and
+repeating patterns. It uses the full image by default. Use `--crop-size 1024` to
+explicitly take a centered crop before comparison, or `--max-samples 0` to
+compare every image in the input directory.
 
 ## Results
 
-Comparison grids show the HR source next to nearest, bilinear, bicubic, Lanczos,
-and neural RGB downscales. They are meant for close visual inspection of edge
-behavior, texture retention, color stability, and runtime.
+`compare.py` writes two comparison grids per sample:
 
-![Street scene comparison](comparison_outputs/sample_004_comparison.png)
+- Downscaling: full-resolution input beside low-resolution outputs from nearest,
+  bilinear, bicubic, Lanczos, and the neural downscaler.
+- Upscaling: full-resolution input is first downsampled once with Lanczos; that
+  same LR image is then upscaled by nearest, bilinear, bicubic, Lanczos, and the
+  neural decoder.
 
-![Architecture comparison](comparison_outputs/sample_008_comparison.png)
+The upscaling grid is intentionally decoder-only for the neural method. The
+neural downscaler does not create the LR input for that comparison.
+
+![Diagonal line downscale comparison](comparison_outputs/sample_001_comparison.png)
+
+![Small text upscale comparison](comparison_outputs/sample_007_upscale_comparison.png)
