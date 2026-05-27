@@ -1,13 +1,18 @@
 import argparse
 import re
+import time
 from pathlib import Path
 
-import datasets
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from PIL import Image, ImageDraw
 from torchvision import transforms
+
+
+DIV2K_FOLDERS = {
+    "train": "DIV2K_train_HR",
+    "validation": "DIV2K_valid_HR",
+}
 
 
 class ResidualBlock(nn.Module):
@@ -26,7 +31,7 @@ class ResidualBlock(nn.Module):
 
 
 class Downscaler(nn.Module):
-    def __init__(self, c_in: int = 1, n_residual_blocks: int = 10):
+    def __init__(self, c_in: int = 3, n_residual_blocks: int = 10):
         super().__init__()
         self.encoder = nn.Sequential(
             nn.Conv2d(c_in, 12, kernel_size=3, padding=1),
@@ -52,22 +57,6 @@ class Downscaler(nn.Module):
         return pred_lr, pred_hr
 
 
-def rgb_to_yuv(rgb):
-    r, g, b = rgb[:, 0:1], rgb[:, 1:2], rgb[:, 2:3]
-    y = 0.299 * r + 0.587 * g + 0.114 * b
-    u = -0.14713 * r - 0.28886 * g + 0.436 * b
-    v = 0.615 * r - 0.51499 * g - 0.10001 * b
-    return torch.cat((y, u, v), dim=1)
-
-
-def yuv_to_rgb(yuv):
-    y, u, v = yuv[:, 0:1], yuv[:, 1:2], yuv[:, 2:3]
-    r = y + 1.13983 * v
-    g = y - 0.39465 * u - 0.58060 * v
-    b = y + 2.03211 * u
-    return torch.cat((r, g, b), dim=1)
-
-
 def build_urban100_hr_indices(raw_dataset, scale="2", image_key="image"):
     pattern = re.compile(r"img_(\d+)_SRF_(\d+)_(.+)\.png$")
     hr_indices = []
@@ -87,7 +76,7 @@ def build_urban100_hr_indices(raw_dataset, scale="2", image_key="image"):
 
 
 def load_model(model_path, device):
-    model = Downscaler(c_in=1, n_residual_blocks=10).to(device)
+    model = Downscaler(c_in=3, n_residual_blocks=10).to(device)
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
 
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
@@ -104,7 +93,21 @@ def load_model(model_path, device):
     return model
 
 
-def load_hr_images(seed, max_samples):
+def center_crop_pil(image, crop_size):
+    if crop_size is None or crop_size <= 0:
+        return image
+
+    width, height = image.size
+    crop_width = min(crop_size, width)
+    crop_height = min(crop_size, height)
+    left = (width - crop_width) // 2
+    top = (height - crop_height) // 2
+    return image.crop((left, top, left + crop_width, top + crop_height))
+
+
+def load_urban100_hr_images(seed, max_samples, crop_size):
+    import datasets
+
     raw_dataset = datasets.load_dataset("Voxel51/Urban100", split="train")
     hr_indices = build_urban100_hr_indices(raw_dataset)
 
@@ -112,10 +115,50 @@ def load_hr_images(seed, max_samples):
     order = torch.randperm(len(hr_indices), generator=generator).tolist()
     selected = [hr_indices[i] for i in order[:max_samples]]
 
-    print(f"{len(raw_dataset)} raw rows -> {len(hr_indices)} HR images")
+    print(f"Urban100: {len(raw_dataset)} raw rows -> {len(hr_indices)} HR images")
     print(f"comparison samples: {len(selected)}")
 
-    return [raw_dataset[idx]["image"].convert("RGB") for idx in selected]
+    return [
+        center_crop_pil(raw_dataset[idx]["image"].convert("RGB"), crop_size)
+        for idx in selected
+    ]
+
+
+def load_div2k_hr_images(root, split, seed, max_samples, crop_size):
+    folder = Path(root) / DIV2K_FOLDERS[split]
+    image_paths = sorted(folder.glob("*.png"))
+    if not image_paths:
+        raise FileNotFoundError(
+            f"No DIV2K PNGs found in {folder}. Expected files like "
+            f"data/div2k/{DIV2K_FOLDERS[split]}/0801.png."
+        )
+
+    generator = torch.Generator().manual_seed(seed)
+    order = torch.randperm(len(image_paths), generator=generator).tolist()
+    selected = [image_paths[i] for i in order[:max_samples]]
+
+    print(f"DIV2K {split}: {len(image_paths)} HR images in {folder}")
+    print(f"comparison samples: {len(selected)}")
+
+    images = []
+    for path in selected:
+        image = Image.open(path).convert("RGB")
+        image = center_crop_pil(image, crop_size)
+        print(f"{path.name}: using {image.width}x{image.height}")
+        images.append(image)
+    return images
+
+
+def load_hr_images(args):
+    if args.dataset == "urban100":
+        return load_urban100_hr_images(args.seed, args.max_samples, args.crop_size)
+    return load_div2k_hr_images(
+        args.div2k_root,
+        args.div2k_split,
+        args.seed,
+        args.max_samples,
+        args.crop_size,
+    )
 
 
 def tensor_to_pil(image):
@@ -140,20 +183,32 @@ def resize_pil(image, size, resample):
 
 def neural_downscale(model, image, device):
     X = pil_to_tensor(image).to(device)
-    X_yuv = rgb_to_yuv(X)
-    pred_lr_luma, _ = model(X_yuv[:, 0:1])
-    uv_lr = F.interpolate(
-        X_yuv[:, 1:3],
-        size=pred_lr_luma.shape[-2:],
-        mode="bicubic",
-        align_corners=False,
-    )
-    pred_lr = yuv_to_rgb(torch.cat((pred_lr_luma, uv_lr), dim=1))
+    pred_lr, _ = model(X)
     return tensor_to_pil(pred_lr[0])
 
 
+def synchronize_if_needed(device):
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+
+
+def timed_downscale(fn, device):
+    synchronize_if_needed(device)
+    start_time = time.perf_counter()
+    image = fn()
+    synchronize_if_needed(device)
+    elapsed = time.perf_counter() - start_time
+    return image, elapsed
+
+
+def format_elapsed(seconds):
+    if seconds < 1:
+        return f"{seconds * 1000:.1f} ms"
+    return f"{seconds:.2f} s"
+
+
 def save_image_grid(images, labels, output_path):
-    label_height = 32
+    label_height = 46
     padding = 16
     total_width = sum(img.width for img in images) + padding * (len(images) - 1)
     total_height = max(img.height for img in images) + label_height
@@ -162,7 +217,7 @@ def save_image_grid(images, labels, output_path):
 
     x = 0
     for img, label in zip(images, labels):
-        draw.text((x, 8), label, fill="black")
+        draw.multiline_text((x, 6), label, fill="black", spacing=2)
         canvas.paste(img, (x, label_height))
         x += img.width + padding
 
@@ -182,15 +237,23 @@ def save_comparisons(model, hr_images, output_dir, device):
     with torch.no_grad():
         for sample_id, hr_image in enumerate(hr_images):
             lr_size = downscale_size(hr_image)
-            labels = ["source_HR"]
+            labels = [f"source_HR\n{hr_image.width}x{hr_image.height}"]
             images = [hr_image]
 
             for label, resample in methods:
-                labels.append(label)
-                images.append(resize_pil(hr_image, lr_size, resample))
+                downscaled, elapsed = timed_downscale(
+                    lambda resample=resample: resize_pil(hr_image, lr_size, resample),
+                    device,
+                )
+                labels.append(f"{label}\n{format_elapsed(elapsed)}")
+                images.append(downscaled)
 
-            labels.append("neural_Y_bicubic_UV")
-            images.append(neural_downscale(model, hr_image, device))
+            downscaled, elapsed = timed_downscale(
+                lambda: neural_downscale(model, hr_image, device),
+                device,
+            )
+            labels.append(f"neural_RGB\n{format_elapsed(elapsed)}")
+            images.append(downscaled)
 
             save_image_grid(images, labels, output_dir / f"sample_{sample_id:03d}_comparison.png")
 
@@ -201,7 +264,11 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Compare native HR downsampling methods.")
     parser.add_argument("--model", type=Path, default=Path("model.pth"))
     parser.add_argument("--output-dir", type=Path, default=Path("comparison_outputs"))
-    parser.add_argument("--max-samples", type=int, default=10)
+    parser.add_argument("--dataset", choices=("div2k", "urban100"), default="div2k")
+    parser.add_argument("--div2k-root", type=Path, default=Path("data/div2k"))
+    parser.add_argument("--div2k-split", choices=tuple(DIV2K_FOLDERS), default="validation")
+    parser.add_argument("--crop-size", type=int, default=0, help="Center crop size before downscaling. Default 0 uses full images.")
+    parser.add_argument("--max-samples", type=int, default=3)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     return parser.parse_args()
@@ -210,8 +277,9 @@ def parse_args():
 def main():
     args = parse_args()
     device = torch.device(args.device)
+    print(f"using device {device}")
     model = load_model(args.model, device)
-    hr_images = load_hr_images(args.seed, args.max_samples)
+    hr_images = load_hr_images(args)
     saved = save_comparisons(model, hr_images, args.output_dir, device)
     print(f"Saved {saved} samples to {args.output_dir.resolve()}")
 
