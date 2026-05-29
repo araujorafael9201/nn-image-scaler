@@ -14,7 +14,9 @@ useful when the image needs to be brought back up again.
 - `train.py`: trains the RGB downscaler on DIV2K crops and writes checkpoints.
 - `compare.py`: generates side-by-side visual comparisons for classical and
   neural downsampling methods.
-- `nn_downscaler.ipynb`: earlier notebook exploration.
+- `dataset.py`: DIV2K download/path helpers and crop dataset.
+- `model.py`: checkpoint-compatible RGB downscaler model definition.
+- `nn_downscaler.ipynb`: notebook-local experimental training path.
 - `downsampling_methods_exploration.ipynb`: baseline resampling experiments.
 
 ## Experiment
