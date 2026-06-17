@@ -17,22 +17,22 @@ class ResidualBlock(nn.Module):
 
 
 class Downscaler(nn.Module):
-    def __init__(self, c_in: int = 3, n_residual_blocks: int = 10):
+    def __init__(self, c_in: int = 3, n_residual_blocks: int = 4):
         super().__init__()
         self.encoder = nn.Sequential(
-            nn.Conv2d(c_in, 12, kernel_size=3, padding=1),
+            nn.Conv2d(c_in, 16, kernel_size=3, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(12, 16, kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(16, 32, kernel_size=3, stride=2, padding=1),
             nn.ReLU(inplace=True),
         )
         self.res_blocks = nn.Sequential(*[
-            ResidualBlock(c_in=16, c_out=16) for _ in range(n_residual_blocks)
+            ResidualBlock(c_in=32, c_out=32) for _ in range(n_residual_blocks)
         ])
-        self.lr_head = nn.Conv2d(16, c_in, kernel_size=1)
+        self.lr_head = nn.Conv2d(32, c_in, kernel_size=1)
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(c_in, 8, kernel_size=4, stride=2, padding=1),
+            nn.ConvTranspose2d(c_in, 16, kernel_size=4, stride=2, padding=1),
             nn.ReLU(inplace=True),
-            nn.Conv2d(8, c_in, kernel_size=3, padding=1),
+            nn.Conv2d(16, c_in, kernel_size=3, padding=1),
         )
 
     def forward(self, X):

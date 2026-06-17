@@ -181,7 +181,7 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"using device {device}")
 
-    model = Downscaler(c_in=3, n_residual_blocks=10).to(device)
+    model = Downscaler(c_in=3, n_residual_blocks=4).to(device)
     model = torch.compile(model)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=INITIAL_LR)

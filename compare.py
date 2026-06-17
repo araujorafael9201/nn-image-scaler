@@ -13,7 +13,7 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 
 
 def load_model(model_path, device):
-    model = Downscaler(c_in=3, n_residual_blocks=10).to(device)
+    model = Downscaler(c_in=3, n_residual_blocks=4).to(device)
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
 
     if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
