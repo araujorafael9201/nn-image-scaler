@@ -1,3 +1,4 @@
+import random
 from pathlib import Path
 
 from PIL import Image
@@ -17,28 +18,33 @@ class HRDownscaleDataset(Dataset):
             (self.lr_size, self.lr_size),
             interpolation=transforms.InterpolationMode.BICUBIC,
         )
-        self.images = [
-            img if isinstance(img, Image.Image) else Image.open(img).convert("RGB")
-            for img in image_paths
-        ]
+        first = next(iter(image_paths), None)
+        if isinstance(first, list):
+            self.image_groups = image_paths
+            self.pre_cropped = True
+        else:
+            self.image_groups = [[p] for p in image_paths]
+            self.pre_cropped = False
 
     def __len__(self):
-        return len(self.images) * self.patches_per_image
+        return len(self.image_groups) * self.patches_per_image
 
     def __getitem__(self, idx):
-        image = self.images[idx % len(self.images)]
+        group = self.image_groups[idx % len(self.image_groups)]
+        source = random.choice(group)
+        image = source if isinstance(source, Image.Image) else Image.open(source).convert("RGB")
 
-        if self.train:
-            top, left, height, width = transforms.RandomCrop.get_params(
-                image,
-                output_size=(self.crop_size, self.crop_size),
-            )
-            hr_image = transforms.functional.crop(image, top, left, height, width)
-        else:
-            hr_image = transforms.functional.center_crop(image, (self.crop_size, self.crop_size))
+        if not self.pre_cropped:
+            if self.train:
+                top, left, h, w = transforms.RandomCrop.get_params(
+                    image, output_size=(self.crop_size, self.crop_size)
+                )
+                image = transforms.functional.crop(image, top, left, h, w)
+            else:
+                image = transforms.functional.center_crop(image, (self.crop_size, self.crop_size))
 
-        lr_image = self.resize_lr(hr_image)
-        return self.to_tensor(hr_image), self.to_tensor(lr_image)
+        lr_image = self.resize_lr(image)
+        return self.to_tensor(image), self.to_tensor(lr_image)
 
 
 DIV2K_URLS = {
@@ -61,3 +67,24 @@ def prepare_div2k_hr_paths(root="data/div2k", split="train"):
             filename=f"{DIV2K_FOLDERS[split]}.zip",
         )
     return sorted(folder.glob("*.png"))
+
+
+def prepare_div2k_patch_paths(root="data/div2k", split="train", crop_size=512, n_patches=3):
+    src_paths = prepare_div2k_hr_paths(root, split)
+    cache_dir = Path(root) / f"patches_{crop_size}" / DIV2K_FOLDERS[split]
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    groups = []
+    for src in src_paths:
+        group = []
+        img = None
+        for i in range(n_patches):
+            dst = cache_dir / f"{src.stem}_p{i}.png"
+            if not dst.exists():
+                if img is None:
+                    img = Image.open(src).convert("RGB")
+                top, left, h, w = transforms.RandomCrop.get_params(img, (crop_size, crop_size))
+                transforms.functional.crop(img, top, left, h, w).save(dst)
+            group.append(dst)
+        groups.append(group)
+    return groups

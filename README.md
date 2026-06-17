@@ -27,8 +27,15 @@ The current model has three pieces:
 - an LR head that emits the learned RGB downsample;
 - a decoder that reconstructs HR RGB using only the learned LR output.
 
-Training uses DIV2K HR images. Each batch samples `512x512` HR crops and creates
-`256x256` LR targets with bicubic resizing. The loss combines:
+Training uses DIV2K HR images. On first run, `train.py` extracts three random
+`512x512` crops from each source image and saves them to `data/div2k/patches_512/`
+as full-quality PNGs. Subsequent runs skip this step and load from the cache.
+During training, each `__getitem__` call lazily opens one of the pre-extracted
+patches and picks randomly among the three, so the model sees different crops each
+epoch without holding the full dataset in RAM.
+
+Each batch creates `256x256` LR targets from those HR patches via bicubic
+resizing. The loss combines:
 
 - LR loss: how closely the learned downsample matches the bicubic target;
 - HR loss: how well the decoder reconstructs the original RGB crop.

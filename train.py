@@ -9,7 +9,7 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from dataset import HRDownscaleDataset, prepare_div2k_hr_paths
+from dataset import HRDownscaleDataset, prepare_div2k_patch_paths
 from model import Downscaler
 
 
@@ -39,18 +39,18 @@ def mse(pred, target):
 
 
 def create_dataloaders(batch_size):
-    train_hr_paths = prepare_div2k_hr_paths(split="train")
-    val_hr_paths = prepare_div2k_hr_paths(split="validation")
+    train_groups = prepare_div2k_patch_paths(split="train")
+    val_groups = prepare_div2k_patch_paths(split="validation")
 
     train_dataset = HRDownscaleDataset(
-        train_hr_paths,
+        train_groups,
         crop_size=CROP_SIZE,
         scale=SCALE,
         train=True,
         patches_per_image=PATCHES_PER_IMAGE,
     )
     val_dataset = HRDownscaleDataset(
-        val_hr_paths,
+        val_groups,
         crop_size=CROP_SIZE,
         scale=SCALE,
         train=False,
@@ -75,7 +75,7 @@ def create_dataloaders(batch_size):
         persistent_workers=True,
     )
 
-    print(f"DIV2K train images={len(train_hr_paths)} validation images={len(val_hr_paths)}")
+    print(f"DIV2K train images={len(train_groups)} validation images={len(val_groups)}")
     print(f"train patches per epoch={len(train_dataset)} validation patches={len(val_dataset)}")
     return train_dataloader, val_dataloader
 
@@ -190,6 +190,8 @@ def unwrap_compiled_model(model):
 def main():
     args = parse_args()
 
+    print(f"using args: {args}")
+    print(f"preparing dataset")
     train_dataloader, val_dataloader = create_dataloaders(args.batch_size)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -197,11 +199,13 @@ def main():
 
     model = Downscaler(c_in=3, n_residual_blocks=args.n_residual_blocks).to(device)
 
+    print(f"loading checkpoint")
     if args.checkpoint is not None:
         state_dict = torch.load(args.checkpoint, map_location=device, weights_only=True)
         model.load_state_dict(state_dict)
         print(f"loaded checkpoint from {args.checkpoint}")
 
+    print(f"compiling model")
     model = torch.compile(model)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=INITIAL_LR)
