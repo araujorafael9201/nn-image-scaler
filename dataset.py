@@ -8,7 +8,6 @@ from torchvision.datasets.utils import download_and_extract_archive
 
 class HRDownscaleDataset(Dataset):
     def __init__(self, image_paths, crop_size=512, scale=2, train=False, patches_per_image=1):
-        self.image_paths = list(image_paths)
         self.crop_size = crop_size
         self.lr_size = crop_size // scale
         self.train = train
@@ -18,17 +17,16 @@ class HRDownscaleDataset(Dataset):
             (self.lr_size, self.lr_size),
             interpolation=transforms.InterpolationMode.BICUBIC,
         )
+        self.images = [
+            img if isinstance(img, Image.Image) else Image.open(img).convert("RGB")
+            for img in image_paths
+        ]
 
     def __len__(self):
-        return len(self.image_paths) * self.patches_per_image
-
-    def _load_image(self, item):
-        if isinstance(item, Image.Image):
-            return item.convert("RGB")
-        return Image.open(item).convert("RGB")
+        return len(self.images) * self.patches_per_image
 
     def __getitem__(self, idx):
-        image = self._load_image(self.image_paths[idx % len(self.image_paths)])
+        image = self.images[idx % len(self.images)]
 
         if self.train:
             top, left, height, width = transforms.RandomCrop.get_params(

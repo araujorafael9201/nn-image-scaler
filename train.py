@@ -60,17 +60,19 @@ def create_dataloaders(batch_size):
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=4,
-        prefetch_factor=2,
+        num_workers=8,
+        prefetch_factor=4,
         pin_memory=True,
+        persistent_workers=True,
     )
     val_dataloader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=4,
-        prefetch_factor=2,
+        num_workers=8,
+        prefetch_factor=4,
         pin_memory=True,
+        persistent_workers=True,
     )
 
     print(f"DIV2K train images={len(train_hr_paths)} validation images={len(val_hr_paths)}")
