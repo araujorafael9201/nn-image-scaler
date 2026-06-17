@@ -1,3 +1,4 @@
+import argparse
 import csv
 import datetime
 import time
@@ -14,21 +15,30 @@ from model import Downscaler
 
 CROP_SIZE = 512
 SCALE = 2
-BATCH_SIZE = 48
 PATCHES_PER_IMAGE = 8
-EPOCHS = 50
 INITIAL_LR = 0.001
 MIN_LR = 0.00003
-VALIDATION_INTERVAL = 5
 LR_LOSS_WEIGHT = 1.0
 HR_LOSS_WEIGHT = 1.0
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train the RGB neural downscaler on DIV2K.")
+    parser.add_argument("--n-residual-blocks", type=int, default=4)
+    parser.add_argument("--checkpoint", type=Path, default=None,
+                        help="Checkpoint (.pth state dict) to load before training.")
+    parser.add_argument("--batch-size", type=int, default=48)
+    parser.add_argument("--epochs", type=int, default=50)
+    parser.add_argument("--checkpoint-interval", type=int, default=5,
+                        help="Epochs between validation runs and checkpoint saves.")
+    return parser.parse_args()
 
 
 def mse(pred, target):
     return (pred - target).square().mean()
 
 
-def create_dataloaders():
+def create_dataloaders(batch_size):
     train_hr_paths = prepare_div2k_hr_paths(split="train")
     val_hr_paths = prepare_div2k_hr_paths(split="validation")
 
@@ -48,7 +58,7 @@ def create_dataloaders():
 
     train_dataloader = DataLoader(
         train_dataset,
-        batch_size=BATCH_SIZE,
+        batch_size=batch_size,
         shuffle=True,
         num_workers=4,
         prefetch_factor=2,
@@ -56,7 +66,7 @@ def create_dataloaders():
     )
     val_dataloader = DataLoader(
         val_dataset,
-        batch_size=BATCH_SIZE,
+        batch_size=batch_size,
         shuffle=False,
         num_workers=4,
         prefetch_factor=2,
@@ -176,12 +186,20 @@ def unwrap_compiled_model(model):
 
 
 def main():
-    train_dataloader, val_dataloader = create_dataloaders()
+    args = parse_args()
+
+    train_dataloader, val_dataloader = create_dataloaders(args.batch_size)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"using device {device}")
 
-    model = Downscaler(c_in=3, n_residual_blocks=4).to(device)
+    model = Downscaler(c_in=3, n_residual_blocks=args.n_residual_blocks).to(device)
+
+    if args.checkpoint is not None:
+        state_dict = torch.load(args.checkpoint, map_location=device, weights_only=True)
+        model.load_state_dict(state_dict)
+        print(f"loaded checkpoint from {args.checkpoint}")
+
     model = torch.compile(model)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=INITIAL_LR)
@@ -193,7 +211,7 @@ def main():
         min_lr=MIN_LR,
     )
 
-    epoch_progress = tqdm(range(EPOCHS), desc="epochs")
+    epoch_progress = tqdm(range(args.epochs), desc="epochs")
     for epoch in epoch_progress:
         train_metrics = train_one_epoch(model, train_dataloader, optimizer, device, epoch)
         current_lr = optimizer.param_groups[0]["lr"]
@@ -212,7 +230,7 @@ def main():
             f"img/s={train_metrics['images_per_second']:.1f} lr={current_lr:.6g} "
         )
 
-        if epoch == 0 or (epoch + 1) % VALIDATION_INTERVAL == 0:
+        if epoch == 0 or (epoch + 1) % args.checkpoint_interval == 0:
             val_metrics = evaluate(model, val_dataloader, device)
             tqdm.write(
                 f"validation epoch {epoch}: loss={val_metrics['loss']:.6f} "

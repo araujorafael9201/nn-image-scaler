@@ -50,6 +50,16 @@ Train the model:
 python train.py
 ```
 
+All training options are configurable via CLI arguments:
+
+| Argument | Default | Description |
+|---|---|---|
+| `--n-residual-blocks` | `4` | Number of residual blocks in the model |
+| `--checkpoint` | — | State dict (`.pth`) to warm-start from before training |
+| `--batch-size` | `48` | Training and validation batch size |
+| `--epochs` | `50` | Total number of training epochs |
+| `--checkpoint-interval` | `5` | Epochs between validation runs and checkpoint saves |
+
 Generate comparison images from local test inputs:
 
 ```bash
