@@ -1,100 +1,78 @@
 # NN Downscaler
 
-Neural image downscaling experiments for learning compact, reconstructable image
-representations.
-
-The model receives a high-resolution RGB image, predicts a 2x lower-resolution
-RGB image, and trains a decoder to reconstruct the original image from that
-predicted bottleneck. The interesting question is not just whether the learned
-downscale looks like bicubic or Lanczos, but whether it can keep details that are
-useful when the image needs to be brought back up again.
+Neural image downscaling experiment: train a network to produce a 2× lower-resolution RGB image that a decoder can reconstruct back to the original. The bottleneck is the learned LR image itself — the decoder receives no encoder feature maps, so reconstruction quality depends entirely on what the encoder chose to preserve.
 
 ## Contents
 
-- `train.py`: trains the RGB downscaler on DIV2K crops and writes checkpoints.
-- `compare.py`: generates side-by-side visual comparisons for classical and
-  neural downsampling methods.
-- `dataset.py`: DIV2K download/path helpers and crop dataset.
-- `model.py`: checkpoint-compatible RGB downscaler model definition.
-- `nn_downscaler.ipynb`: notebook-local experimental training path.
-- `downsampling_methods_exploration.ipynb`: baseline resampling experiments.
+- `train.py` — trains the RGB downscaler on DIV2K and writes checkpoints.
+- `compare.py` — generates visual comparisons for classical and neural downsampling, plus round-trip reconstructions.
+- `dataset.py` — DIV2K download/path helpers and patch extraction.
+- `tensor_cache.py` — memory-mapped tensor pipeline used by the training loop.
+- `model.py` — `Downscaler` model definition.
 
-## Experiment
+## Architecture
 
-The current model has three pieces:
+The model has three stages:
 
-- an encoder that compresses the HR RGB input by 2x;
-- an LR head that emits the learned RGB downsample;
-- a decoder that reconstructs HR RGB using only the learned LR output.
+- **Encoder** — two convolutions that compress the HR input by 2× spatially (3→16→32 channels).
+- **Residual blocks × 4** — refinement at the bottleneck resolution; 92% of the model's 80K parameters live here.
+- **LR head** — 1×1 conv that projects 32 features to 3 RGB channels, producing `pred_lr`.
+- **Decoder** — a transposed convolution that upscales `pred_lr` back to the original resolution, producing `pred_hr`. Receives only `pred_lr`; no skip connections.
 
-Training uses DIV2K HR images. On first run, `train.py` extracts three random
-`512x512` crops from each source image and saves them to `data/div2k/patches_512/`
-as full-quality PNGs. Subsequent runs skip this step and load from the cache.
-During training, each `__getitem__` call lazily opens one of the pre-extracted
-patches and picks randomly among the three, so the model sees different crops each
-epoch without holding the full dataset in RAM.
+## Training
 
-Each batch creates `256x256` LR targets from those HR patches via bicubic
-resizing. The loss combines:
+Trained on [DIV2K](https://data.vision.ee.ethz.ch/cvl/DIV2K/) (800 HR images). Patches are pre-extracted and cached as a memory-mapped tensor to keep the training loop I/O-free. LR targets are generated on-the-fly via bicubic resize.
 
-- LR loss: how closely the learned downsample matches the bicubic target;
-- HR loss: how well the decoder reconstructs the original RGB crop.
+Loss combines two MSE terms with equal weight:
 
-This keeps the bottleneck honest: the decoder does not receive hidden encoder
-features, so reconstruction quality depends on the actual downscaled image.
+- **LR loss** — keeps `pred_lr` anchored to the bicubic distribution, preventing steganographic encoding tricks.
+- **HR loss** — rewards faithful reconstruction of the original from `pred_lr`.
+
+Optimised with AdamW and ReduceLROnPlateau over 50 epochs.
 
 ## Usage
-
-Install the core dependencies in a Python environment:
 
 ```bash
 pip install torch torchvision matplotlib numpy pillow notebook tqdm
 ```
 
-Train the model:
-
 ```bash
-python train.py
+python train.py [--n-residual-blocks N] [--batch-size N] [--epochs N] [--checkpoint path.pth]
 ```
-
-All training options are configurable via CLI arguments:
-
-| Argument | Default | Description |
-|---|---|---|
-| `--n-residual-blocks` | `4` | Number of residual blocks in the model |
-| `--checkpoint` | — | State dict (`.pth`) to warm-start from before training |
-| `--batch-size` | `48` | Training and validation batch size |
-| `--epochs` | `50` | Total number of training epochs |
-| `--checkpoint-interval` | `5` | Epochs between validation runs and checkpoint saves |
-
-Generate comparison images from local test inputs:
 
 ```bash
 python compare.py --model path/to/model.pth
 ```
 
-Use `--model` to point at the checkpoint or `model.pth` file produced by your
-own training run. By default, `compare.py` reads images from `test_inputs/`,
-writes outputs to `comparison_outputs/`, and labels each downsampling or
-upscaling method with its runtime. The default inputs are curated stress images
-with small text, grids, diagonal lines, fine texture, hard color edges, and
-repeating patterns. It uses the full image by default. Use `--crop-size 1024` to
-explicitly take a centered crop before comparison, or `--max-samples 0` to
-compare every image in the input directory.
+`compare.py` reads from `test_inputs/`, writes to `comparison_outputs/`, and processes up to 10 images by default. Use `--crop-size N` for a centred crop or `--max-samples 0` for all inputs.
 
 ## Results
 
-`compare.py` writes two comparison grids per sample:
+Two grids are produced per sample:
 
-- Downscaling: full-resolution input beside low-resolution outputs from nearest,
-  bilinear, bicubic, Lanczos, and the neural downscaler.
-- Upscaling: full-resolution input is first downsampled once with Lanczos; that
-  same LR image is then upscaled by nearest, bilinear, bicubic, Lanczos, and the
-  neural decoder.
+- **Downscaling** (`sample_NNN_comparison.png`) — HR source alongside LR outputs from nearest, bilinear, bicubic, Lanczos, and the neural encoder.
+- **Round-trip** (`sample_NNN_roundtrip.png`) — each method downscales and upscales with the same filter; the neural method uses encoder→decoder end-to-end. PSNR is measured against the original HR.
 
-The upscaling grid is intentionally decoder-only for the neural method. The
-neural downscaler does not create the LR input for that comparison.
+Round-trip results across 10 test images (1536×1536 → 768×768 → 1536×1536):
 
-![Diagonal line downscale comparison](comparison_outputs/sample_001_comparison.png)
+| Method | Mean PSNR |
+|---|---|
+| nearest ↓↑ | 19.70 dB |
+| bilinear ↓↑ | 20.98 dB |
+| **neural ↓↑** | **21.18 dB** |
+| bicubic ↓↑ | 22.56 dB |
+| lanczos ↓↑ | 23.03 dB |
 
-![Small text upscale comparison](comparison_outputs/sample_007_upscale_comparison.png)
+The neural pipeline outperforms nearest and bilinear end-to-end. On natural aperiodic content it approaches bicubic; on high-frequency periodic patterns (moiré, checkerboard) classical anti-aliasing filters retain an advantage.
+
+![Downscale comparison](comparison_outputs/sample_001_comparison.png)
+
+![Round-trip comparison](comparison_outputs/sample_007_roundtrip.png)
+
+## Future Directions
+
+- Larger decoder (currently only 1.2K parameters — the main capacity bottleneck).
+- Perceptual or adversarial HR loss to push beyond MSE-blurry reconstructions.
+- Relaxing the LR loss from pixel-MSE to a perceptual constraint, giving the encoder more freedom.
+- Tuning the LR/HR loss weight balance.
+- Frequency-domain supervision to improve high-frequency pattern handling.
