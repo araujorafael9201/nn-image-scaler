@@ -1,7 +1,9 @@
 import argparse
+import csv
 import time
 from pathlib import Path
 
+import numpy as np
 import torch
 from PIL import Image, ImageDraw
 from torchvision import transforms
@@ -134,8 +136,19 @@ def format_elapsed(seconds):
     return f"{seconds:.2f} s"
 
 
+def psnr(img1, img2):
+    a = np.array(img1, dtype=np.float32) / 255.0
+    b = np.array(img2, dtype=np.float32) / 255.0
+    mse = np.mean((a - b) ** 2)
+    return float("inf") if mse == 0 else 10 * np.log10(1.0 / mse)
+
+
+def format_psnr(val):
+    return "ref" if val == float("inf") else f"{val:.2f} dB"
+
+
 def save_image_grid(images, labels, output_path):
-    label_height = 46
+    label_height = 62
     padding = 16
     total_width = sum(img.width for img in images) + padding * (len(images) - 1)
     total_height = max(img.height for img in images) + label_height
@@ -155,67 +168,102 @@ def save_comparisons(model, hr_images, output_dir, device):
     output_dir.mkdir(parents=True, exist_ok=True)
 
     methods = [
-        ("nearest", Image.Resampling.NEAREST),
+        ("nearest",  Image.Resampling.NEAREST),
         ("bilinear", Image.Resampling.BILINEAR),
-        ("bicubic", Image.Resampling.BICUBIC),
-        ("lanczos", Image.Resampling.LANCZOS),
+        ("bicubic",  Image.Resampling.BICUBIC),
+        ("lanczos",  Image.Resampling.LANCZOS),
     ]
+
+    all_metrics = []
 
     with torch.no_grad():
         for sample_id, hr_image in enumerate(hr_images):
             lr_size = downscale_size(hr_image)
-            lr_reference = resize_pil(hr_image, lr_size, Image.Resampling.LANCZOS)
-            downscale_labels = [f"source_HR\n{hr_image.width}x{hr_image.height}"]
-            downscale_images = [hr_image]
-            upscale_labels = [
-                f"source_HR\n{hr_image.width}x{hr_image.height}",
-                f"lanczos_LR input\n{lr_reference.width}x{lr_reference.height}",
-            ]
-            upscale_images = [hr_image, lr_reference]
+
+            # ── Downscaling grid ─────────────────────────────────────────────
+            # Each method shown at LR resolution; neural LR shown alongside.
+            down_labels = [f"source HR\n{hr_image.width}x{hr_image.height}"]
+            down_images = [hr_image]
+
+            # Cache LR images and timings for reuse in round-trip grid.
+            lr_cache = {}
+            down_elapsed_cache = {}
 
             for label, resample in methods:
-                downscaled, elapsed = timed_downscale(
-                    lambda resample=resample: resize_pil(hr_image, lr_size, resample),
-                    device,
+                lr, elapsed = timed_downscale(
+                    lambda r=resample: resize_pil(hr_image, lr_size, r), device
                 )
-                downscale_labels.append(f"{label} down\n{format_elapsed(elapsed)}")
-                downscale_images.append(downscaled)
+                lr_cache[label] = lr
+                down_elapsed_cache[label] = elapsed
+                down_labels.append(f"{label}\n{format_elapsed(elapsed)}")
+                down_images.append(lr)
+                all_metrics.append({
+                    "sample": sample_id, "grid": "down", "method": label,
+                    "psnr_db": None, "elapsed_s": round(elapsed, 6),
+                })
 
-                upscaled, elapsed = timed_downscale(
-                    lambda resample=resample: resize_pil(
-                        lr_reference,
-                        hr_image.size,
-                        resample,
-                    ),
-                    device,
-                )
-                upscale_labels.append(f"{label} up\n{format_elapsed(elapsed)}")
-                upscale_images.append(upscaled)
-
-            neural_lr, elapsed = timed_downscale(
-                lambda: neural_downscale(model, hr_image, device),
-                device,
+            neural_lr, neural_down_elapsed = timed_downscale(
+                lambda: neural_downscale(model, hr_image, device), device
             )
-            downscale_labels.append(f"neural_RGB down\n{format_elapsed(elapsed)}")
-            downscale_images.append(neural_lr)
-
-            neural_hr, elapsed = timed_downscale(
-                lambda: neural_reconstruct(model, lr_reference, device),
-                device,
-            )
-            upscale_labels.append(f"neural_RGB recon\n{format_elapsed(elapsed)}")
-            upscale_images.append(neural_hr)
+            down_labels.append(f"neural\n{format_elapsed(neural_down_elapsed)}")
+            down_images.append(neural_lr)
+            all_metrics.append({
+                "sample": sample_id, "grid": "down", "method": "neural",
+                "psnr_db": None, "elapsed_s": round(neural_down_elapsed, 6),
+            })
 
             save_image_grid(
-                downscale_images,
-                downscale_labels,
+                down_images, down_labels,
                 output_dir / f"sample_{sample_id:03d}_comparison.png",
             )
-            save_image_grid(
-                upscale_images,
-                upscale_labels,
-                output_dir / f"sample_{sample_id:03d}_upscale_comparison.png",
+
+            # ── Round-trip grid ──────────────────────────────────────────────
+            # Each method downscales HR then upscales back with the same filter.
+            # Neural uses its own encoder→decoder pipeline end-to-end.
+            # PSNR is always measured against the original HR.
+            rt_labels = [f"source HR\n{hr_image.width}x{hr_image.height}"]
+            rt_images = [hr_image]
+
+            for label, resample in methods:
+                lr = lr_cache[label]
+                upscaled, up_elapsed = timed_downscale(
+                    lambda r=resample, img=lr: resize_pil(img, hr_image.size, r), device
+                )
+                total_elapsed = down_elapsed_cache[label] + up_elapsed
+                uv = psnr(upscaled, hr_image)
+                rt_labels.append(
+                    f"{label} ↓↑\n{format_elapsed(total_elapsed)}\nPSNR {format_psnr(uv)}"
+                )
+                rt_images.append(upscaled)
+                all_metrics.append({
+                    "sample": sample_id, "grid": "roundtrip", "method": label,
+                    "psnr_db": round(uv, 4), "elapsed_s": round(total_elapsed, 6),
+                })
+
+            neural_hr, neural_up_elapsed = timed_downscale(
+                lambda: neural_reconstruct(model, neural_lr, device), device
             )
+            neural_total_elapsed = neural_down_elapsed + neural_up_elapsed
+            nv = psnr(neural_hr, hr_image)
+            rt_labels.append(
+                f"neural ↓↑\n{format_elapsed(neural_total_elapsed)}\nPSNR {format_psnr(nv)}"
+            )
+            rt_images.append(neural_hr)
+            all_metrics.append({
+                "sample": sample_id, "grid": "roundtrip", "method": "neural",
+                "psnr_db": round(nv, 4), "elapsed_s": round(neural_total_elapsed, 6),
+            })
+
+            save_image_grid(
+                rt_images, rt_labels,
+                output_dir / f"sample_{sample_id:03d}_roundtrip.png",
+            )
+
+    metrics_path = output_dir / "metrics.csv"
+    with metrics_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["sample", "grid", "method", "psnr_db", "elapsed_s"])
+        writer.writeheader()
+        writer.writerows(all_metrics)
 
     return len(hr_images)
 
